@@ -58,11 +58,17 @@ class Controls:
 
     self.sm = sm
     if self.sm is None:
-      socks = ['thermal', 'health', 'model', 'liveCalibration', 'radarState', 'frontFrame',
-                                     'dMonitoringState', 'plan', 'pathPlan', 'liveLocationKalman', 'dragonConf']
+      socks = ['thermal', 'health', 'model', 'liveCalibration', 'radarState', 'liveTracks', 'frontFrame',
+                                     'dMonitoringState', 'plan', 'pathPlan', 'liveLocationKalman', 'dragonConf' 'liveMapData']
       ignore_alive = None if params.get('dp_driver_monitor') == b'1' else ['dMonitoringState']
       self.sm = messaging.SubMaster(socks, ignore_alive=ignore_alive)
-
+    
+    # golden patched
+    self.git_check_time = sec_since_boot()
+    self.git_alert_times = 6
+    self.git_alerted = False
+    self.nav_alerted = False
+    
     self.can_sock = can_sock
     if can_sock is None:
       can_timeout = None if os.environ.get('NO_CAN_TIMEOUT', False) else 100
@@ -235,7 +241,42 @@ class Controls:
       # only plan not being received: radar not communicating
       self.events.add(EventName.radarCommIssue)
     elif not self.sm.all_alive_and_valid():
-      self.events.add(EventName.commIssue)
+      if self.enabled:
+        # golden patched
+        log_text_1 = 'nv: '
+        valid_service_list = self.sm.valid.keys()
+        for s in valid_service_list:
+          if not self.sm.valid[s]:
+            log_text_1 += str(s)
+            log_text_1 += ','
+
+        log_text_2 = ''
+        is_model_valid = 0
+        if self.sm.valid['model']:
+          is_model_valid = 1
+        is_radar_valid = 0
+        if self.sm_smiskol.valid['radarState']:
+          is_radar_valid = 1
+        is_model_alive = 0
+        if self.sm.alive['model']:
+          is_model_alive = 1
+        is_radar_alive = 0
+        if self.sm_smiskol.alive['radarState']:
+          is_radar_alive = 1
+        log_text_2 += 'm(v,a):'
+        log_text_2 += str(is_model_valid) + ','
+        log_text_2 += str(is_model_alive) + ' '
+        log_text_2 += 'r(v,a):'
+        log_text_2 += str(is_radar_valid) + ','
+        log_text_2 += str(is_radar_alive)
+
+        # plan_send.valid = sm.all_alive_and_valid(service_list=['carState', 'controlsState', 'radarState'])
+        self.AM.SA_set_frame(self.sm.frame)
+        self.AM.SA_set_enabled(self.enabled)
+        self.AM.SA_add('commIssueAlert', extra_text_1=log_text_1, extra_text_2=log_text_2)
+      else:
+        self.events.add(EventName.commIssue)
+        
     if not self.sm['pathPlan'].mpcSolutionValid:
       self.events.add(EventName.steerTempUnavailable if self.sm['dragonConf'].dpAtl else EventName.plannerError)
     # if not self.sm['liveLocationKalman'].sensorsOK and not NOSENSOR:
@@ -269,7 +310,30 @@ class Controls:
     #if not self.sm['dragonConf'].dpAtl and CS.brakePressed and self.sm['plan'].vTargetFuture >= STARTING_TARGET_SPEED \
     #  and self.CP.openpilotLongitudinalControl and CS.vEgo < 0.3:
     #  self.events.add(EventName.noTarget)
+    
+    # golden
+    if self.git_alert_times >= 0:
+      cur_time = sec_since_boot()
+      if (cur_time - self.git_check_time) > 5:
+        self.git_check_time = cur_time
+        if os.path.exists('/tmp/op_git_updated'):
+          self.git_alert_times -= 1
+          self.events.add(EventName.debugAlert)
+    
+    # golden patched
+    if self.sm.updated['liveMapData']:
+      if not self.nav_alerted:
+        self.nav_alerted = True
+        self.AM.SA_add('nav_connected')
+        return
 
+      map_data = self.sm['liveMapData']
+      if map_data.speedAdvisoryValid and map_data.distToTurn < 1000:
+        dist_text_1 = str(int(map_data.distToTurn)) + " m to off ramp"
+        dist_text_2 = str(int(map_data.speedAdvisory)) + " m to destination"
+        self.AM.SA_add('navigation', extra_text_1=str(dist_text_1), extra_text_2=str(dist_text_2))
+        return
+        
     if self.dp_lead_away_alert:
       current_speed = CS.vEgo * 3.6
 

@@ -104,7 +104,12 @@ class PathPlanner():
     curvature_factor = VM.curvature_factor(v_ego)
 
     self.LP.parse_model(sm['model'])
-
+    
+    # golden patched for auto lane change
+    lc_dir = 0
+    if sm.updated['liveMapData']:
+      lc_dir = int(sm['liveMapData'].speedLimitAheadDistance)
+      
     # Lane change logic
     one_blinker = sm['carState'].leftBlinker != sm['carState'].rightBlinker
     below_lane_change_speed = v_ego < (sm['dragonConf'].dpAssistedLcMinMph * CV.MPH_TO_MS)
@@ -154,7 +159,15 @@ class PathPlanner():
       # we reset the timers when torque is applied regardless
       if torque_applied:
         self.dragon_auto_lc_timer = None
-
+        
+      # golden patched
+      if lc_dir < 0:
+        self.lane_change_direction = LaneChangeDirection.right
+        self.lane_change_state = LaneChangeState.laneChangeStarting
+      if lc_dir > 0:
+        self.lane_change_direction = LaneChangeDirection.left
+        self.lane_change_state = LaneChangeState.laneChangeStarting
+      
       # State transitions
       # off
       if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
